@@ -1,184 +1,113 @@
-from flask import Flask, render_template, redirect, url_for, request, flash
+from flask import Flask, render_template, request, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
-from werkzeug.security import generate_password_hash, check_password_hash
-import subprocess, libvirt
+import os
 
-# Flask Setup
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'super-secret-key'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///db.sqlite'
+app.secret_key = "supersecretkey"
+
+# Database setup
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///vm_manager.db'
 db = SQLAlchemy(app)
 
-# Login System
 login_manager = LoginManager()
-login_manager.login_view = 'login'
 login_manager.init_app(app)
+login_manager.login_view = "login"
 
-# Database Models
+# ==================== MODELS ====================
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(50), unique=True)
-    password = db.Column(db.String(150))
-    role = db.Column(db.String(10), default="user")  # admin / user
-    vms = db.relationship("VM", backref="owner")
+    username = db.Column(db.String(150), unique=True, nullable=False)
+    password = db.Column(db.String(150), nullable=False)
+    role = db.Column(db.String(20), default="user")  # "admin" or "user"
 
 class VM(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(50), unique=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"))
-    ram = db.Column(db.Integer)
-    cpu = db.Column(db.Integer)
-    disk = db.Column(db.Integer)
-    os_type = db.Column(db.String(20))
+    name = db.Column(db.String(150), nullable=False)
+    os_type = db.Column(db.String(50), nullable=False)
+    owner_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
 
+# ==================== LOGIN MANAGER ====================
 @login_manager.user_loader
 def load_user(user_id):
     return User.query.get(int(user_id))
 
-# ================= VM FUNCTIONS ===================
-def list_vms_for_user(user):
-    conn = libvirt.open("qemu:///system")
-    domains = conn.listAllDomains()
-    vms = []
-    for dom in domains:
-        vm_record = VM.query.filter_by(name=dom.name()).first()
-        if vm_record:
-            if user.role == "admin" or vm_record.user_id == user.id:
-                vms.append({"name": dom.name(),
-                            "status": "running" if dom.isActive() else "stopped",
-                            "owner": vm_record.owner.username})
-    conn.close()
-    return vms
+# ==================== ROUTES ====================
+@app.route("/")
+def index():
+    if current_user.is_authenticated:
+        vms = VM.query.filter_by(owner_id=current_user.id).all() if current_user.role == "user" else VM.query.all()
+        return render_template("dashboard.html", vms=vms)
+    return redirect(url_for("login"))
 
-def create_vm(name, ram, cpu, disk, os_type, owner_id):
-    iso_map = {
-        "ubuntu": "/var/lib/libvirt/images/ubuntu-22.04.iso",
-        "debian": "/var/lib/libvirt/images/debian-12.iso"
-    }
-    iso_path = iso_map.get(os_type, iso_map["ubuntu"])
-    disk_path = f"/var/lib/libvirt/images/{name}.qcow2"
-    subprocess.run(["qemu-img", "create", "-f", "qcow2", disk_path, f"{disk}G"])
-
-    cmd = [
-        "virt-install",
-        "--name", name,
-        "--ram", str(ram),
-        "--vcpus", str(cpu),
-        "--disk", f"path={disk_path},format=qcow2",
-        "--cdrom", iso_path,
-        "--network", "bridge=virbr0",
-        "--os-variant", "ubuntu22.04" if os_type == "ubuntu" else "debian12",
-        "--graphics", "vnc,listen=0.0.0.0",
-        "--noautoconsole"
-    ]
-    subprocess.run(cmd)
-
-    new_vm = VM(name=name, ram=ram, cpu=cpu, disk=disk, os_type=os_type, user_id=owner_id)
-    db.session.add(new_vm)
-    db.session.commit()
-
-def start_vm(name):
-    conn = libvirt.open("qemu:///system")
-    dom = conn.lookupByName(name)
-    dom.create()
-    conn.close()
-
-def stop_vm(name):
-    conn = libvirt.open("qemu:///system")
-    dom = conn.lookupByName(name)
-    dom.shutdown()
-    conn.close()
-
-def delete_vm(name):
-    conn = libvirt.open("qemu:///system")
-    dom = conn.lookupByName(name)
-    dom.destroy()
-    dom.undefine()
-    conn.close()
-    VM.query.filter_by(name=name).delete()
-    db.session.commit()
-
-# ================= ROUTES ===================
-@app.route('/')
-def home():
-    return redirect(url_for('login'))
-
-@app.route('/login', methods=['GET', 'POST'])
+@app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        user = User.query.filter_by(username=request.form['username']).first()
-        if user and check_password_hash(user.password, request.form['password']):
+        username = request.form["username"]
+        password = request.form["password"]
+        user = User.query.filter_by(username=username, password=password).first()
+        if user:
             login_user(user)
-            return redirect(url_for('dashboard'))
-        flash("Invalid login")
+            return redirect(url_for("index"))
+        flash("Invalid credentials!", "danger")
     return render_template("login.html")
 
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    if request.method == "POST":
-        username = request.form['username']
-        password = generate_password_hash(request.form['password'], method='sha256')
-        role = "admin" if request.form.get("admin") == "yes" else "user"
-        new_user = User(username=username, password=password, role=role)
-        db.session.add(new_user)
-        db.session.commit()
-        flash("Registered, please login")
-        return redirect(url_for('login'))
-    return render_template("register.html")
-
-@app.route('/dashboard')
-@login_required
-def dashboard():
-    vms = list_vms_for_user(current_user)
-    return render_template("dashboard.html", vms=vms, user=current_user)
-
-@app.route('/create_vm', methods=['GET', 'POST'])
-@login_required
-def create_vm_route():
-    if request.method == "POST":
-        name = request.form['name']
-        ram = int(request.form['ram'])
-        cpu = int(request.form['cpu'])
-        disk = int(request.form['disk'])
-        os_type = request.form['os_type']
-
-        if current_user.role == "admin" and request.form.get("user_id"):
-            owner_id = int(request.form['user_id'])
-        else:
-            owner_id = current_user.id
-
-        create_vm(name, ram, cpu, disk, os_type, owner_id)
-        flash("VM created")
-        return redirect(url_for('dashboard'))
-
-    users = User.query.all() if current_user.role == "admin" else []
-    return render_template("create_vm.html", users=users)
-
-@app.route('/start/<name>')
-@login_required
-def start(name):
-    start_vm(name)
-    return redirect(url_for('dashboard'))
-
-@app.route('/stop/<name>')
-@login_required
-def stop(name):
-    stop_vm(name)
-    return redirect(url_for('dashboard'))
-
-@app.route('/delete/<name>')
-@login_required
-def delete(name):
-    delete_vm(name)
-    return redirect(url_for('dashboard'))
-
-@app.route('/logout')
+@app.route("/logout")
 @login_required
 def logout():
     logout_user()
-    return redirect(url_for('login'))
+    return redirect(url_for("login"))
 
-if __name__ == "__main__":
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if request.method == "POST":
+        username = request.form["username"]
+        password = request.form["password"]
+        role = request.form.get("role", "user")
+        if User.query.filter_by(username=username).first():
+            flash("Username already exists!", "danger")
+        else:
+            user = User(username=username, password=password, role=role)
+            db.session.add(user)
+            db.session.commit()
+            flash("Account created successfully!", "success")
+            return redirect(url_for("login"))
+    return render_template("register.html")
+
+@app.route("/create_vm", methods=["POST"])
+@login_required
+def create_vm():
+    vm_name = request.form["name"]
+    os_type = request.form["os_type"]
+
+    new_vm = VM(name=vm_name, os_type=os_type, owner_id=current_user.id)
+    db.session.add(new_vm)
+    db.session.commit()
+
+    flash(f"VM '{vm_name}' with OS {os_type} created successfully!", "success")
+    return redirect(url_for("index"))
+
+@app.route("/delete_vm/<int:vm_id>")
+@login_required
+def delete_vm(vm_id):
+    vm = VM.query.get_or_404(vm_id)
+    if current_user.role == "admin" or vm.owner_id == current_user.id:
+        db.session.delete(vm)
+        db.session.commit()
+        flash("VM deleted successfully!", "success")
+    else:
+        flash("You do not have permission to delete this VM!", "danger")
+    return redirect(url_for("index"))
+
+# ==================== INIT DATABASE ====================
+with app.app_context():
     db.create_all()
+    # ensure an admin user exists
+    if not User.query.filter_by(username="admin").first():
+        admin = User(username="admin", password="admin", role="admin")
+        db.session.add(admin)
+        db.session.commit()
+
+# ==================== RUN APP ====================
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
