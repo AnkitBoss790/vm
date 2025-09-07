@@ -1,0 +1,20 @@
+<form method="POST">
+  <h2>Create VM</h2>
+  <input type="text" name="name" placeholder="VM Name" required><br>
+  <input type="number" name="ram" placeholder="RAM (MB)" required><br>
+  <input type="number" name="cpu" placeholder="CPU cores" required><br>
+  <input type="number" name="disk" placeholder="Disk Size (GB)" required><br>
+  <select name="os_type">
+    <option value="ubuntu">Ubuntu 22.04</option>
+    <option value="debian">Debian 12</option>
+  </select><br>
+  {% if users %}
+    <label>Assign to user:</label>
+    <select name="user_id">
+      {% for u in users %}
+        <option value="{{ u.id }}">{{ u.username }}</option>
+      {% endfor %}
+    </select><br>
+  {% endif %}
+  <button type="submit">Create</button>
+</form>
