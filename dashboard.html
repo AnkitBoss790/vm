@@ -1,0 +1,17 @@
+<h2>Welcome {{ user.username }} ({{ user.role }})</h2>
+<a href="/create_vm">Create VM</a> | <a href="/logout">Logout</a>
+<table border="1">
+<tr><th>Name</th><th>Status</th><th>Owner</th><th>Actions</th></tr>
+{% for vm in vms %}
+<tr>
+  <td>{{ vm.name }}</td>
+  <td>{{ vm.status }}</td>
+  <td>{{ vm.owner }}</td>
+  <td>
+    <a href="/start/{{ vm.name }}">Start</a> |
+    <a href="/stop/{{ vm.name }}">Stop</a> |
+    <a href="/delete/{{ vm.name }}">Delete</a>
+  </td>
+</tr>
+{% endfor %}
+</table>
